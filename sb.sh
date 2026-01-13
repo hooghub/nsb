@@ -1,6 +1,6 @@
 #!/bin/bash
-# Sing-box 一键部署脚本 (完全双栈版)
-# 支持域名模式 / 自签固定域名 www.epple.com
+# Sing-box 完全双栈部署增强版
+# 支持：域名模式 + HTTP/DNS 验证 / 自签固定域名
 # Author: Chis (优化 by ChatGPT)
 
 set -e
@@ -11,16 +11,13 @@ echo "=================== Sing-box 部署前环境检查 ==================="
 [[ $EUID -ne 0 ]] && echo "[✖] 请用 root 权限运行" && exit 1 || echo "[✔] Root 权限 OK"
 
 # --------- 检测公网 IP ---------
-# 检测 IPv4
 SERVER_IPV4=$(curl -4 -s ipv4.icanhazip.com || curl -4 -s ifconfig.me)
-# 检测 IPv6
 SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || curl -6 -s ifconfig.me)
-
-[[ -n "$SERVER_IPV4" ]] && echo "[✔] 检测到公网 IPv4: $SERVER_IPV4" || echo "[✖] 未检测到公网 IPv4"
+[[ -n "$SERVER_IPV4" ]] && echo "[✔] 检测到公网 IPv4: $SERVER_IPV4" || echo "[!] 未检测到公网 IPv4"
 [[ -n "$SERVER_IPV6" ]] && echo "[✔] 检测到公网 IPv6: $SERVER_IPV6" || echo "[!] 未检测到公网 IPv6（可忽略）"
 
 # --------- 自动安装依赖 ---------
-REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat cron ufw)
+REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat ufw)
 MISSING_CMDS=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v $cmd >/dev/null 2>&1 || MISSING_CMDS+=("$cmd")
@@ -50,16 +47,19 @@ for port in 80 443; do
     fi
 done
 
-read -rp "环境检查完成 ✅  确认继续执行部署吗？(y/N): " CONFIRM
+read -rp "环境检查完成 ✅ 确认继续执行部署吗？(y/N): " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
 
 # --------- 模式选择 ---------
 while true; do
-    echo -e "\n请选择部署模式：\n1) 使用域名 + Let's Encrypt 证书\n2) 使用公网 IP + 自签固定域名 www.epple.com"
+    echo -e "\n请选择部署模式：\n1) 使用域名 + TLS 证书\n2) 使用公网 IP + 自签固定域名 www.epple.com"
     read -rp "请输入选项 (1 或 2): " MODE
     [[ "$MODE" =~ ^[12]$ ]] && break
-    echo "[!] 输入错误，请重新输入 1 或 2"
+    echo "[✖] 输入错误，请重新选择"
 done
+
+CERT_DIR="/etc/ssl/sing-box"
+mkdir -p "$CERT_DIR"
 
 # --------- 安装 sing-box ---------
 if ! command -v sing-box &>/dev/null; then
@@ -67,62 +67,66 @@ if ! command -v sing-box &>/dev/null; then
     bash <(curl -fsSL https://sing-box.app/deb-install.sh)
 fi
 
-CERT_DIR="/etc/ssl/sing-box"
-mkdir -p "$CERT_DIR"
-
 # --------- 域名模式 ---------
 if [[ "$MODE" == "1" ]]; then
     while true; do
         read -rp "请输入你的域名 (例如: example.com): " DOMAIN
-        [[ -z "$DOMAIN" ]] && { echo "[!] 域名不能为空"; continue; }
+        [[ -z "$DOMAIN" ]] && echo "[✖] 域名不能为空" && continue
 
-        # 获取 A 记录 + AAAA 记录
-        DOMAIN_IPV4=$(dig +short A "$DOMAIN" | tail -n1)
-        DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
+        DOMAIN_A=$(dig +short A "$DOMAIN" | tail -n1)
+        DOMAIN_AAAA=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
-        # 检查解析
-        if [[ -z "$DOMAIN_IPV4" && -z "$DOMAIN_IPV6" ]]; then
-            echo "[!] 域名未解析，请确认 DNS 设置正确"
+        if [[ -z "$DOMAIN_A" && -z "$DOMAIN_AAAA" ]]; then
+            echo "[✖] 域名未解析，请检查 DNS" 
             continue
         fi
 
-        if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" != "$SERVER_IPV4" ]]; then
-            echo "[!] IPv4 解析不匹配 VPS 公网 IPv4 ($SERVER_IPV4)，请确认 A 记录"
-            continue
-        fi
+        echo "[✔] 域名解析结果：A=$DOMAIN_A AAAA=$DOMAIN_AAAA"
 
-        if [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
-            echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录"
-            # 这里不强制退出，允许用户继续部署
-        fi
+        # 选择验证方式
+        while true; do
+            echo -e "\n请选择证书验证方式："
+            echo "1) HTTP 验证（Standalone 模式，80端口必须空闲）"
+            echo "2) DNS 验证（推荐 IPv6 / 端口占用场景）"
+            read -rp "请输入选项 (1 或 2): " VAL_METHOD
 
-        echo "[✔] 域名解析检查完成 (IPv4: ${DOMAIN_IPV4:-无}, IPv6: ${DOMAIN_IPV6:-无})"
-        break
+            if [[ "$VAL_METHOD" == "1" ]]; then
+                echo ">>> 使用 HTTP 验证 (Standalone 模式)"
+                # 检查 80 端口
+                if ss -tuln | grep -q ":80"; then
+                    echo "[✖] 80 端口被占用，无法使用 HTTP 验证，请选择 DNS 验证或释放端口"
+                    continue
+                fi
+                ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256 || {
+                    echo "[✖] HTTP 验证失败，请检查端口或重新选择验证方式"
+                    continue
+                }
+                break
+            elif [[ "$VAL_METHOD" == "2" ]]; then
+                echo ">>> 使用 DNS 验证（推荐 IPv6 / 端口占用场景）"
+                echo "[!] 请确保已配置好 DNS API 环境变量（Cloudflare CF_Key / CF_Email / CF_Token）"
+                ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --keylength ec-256 || {
+                    echo "[✖] DNS 验证失败，请检查 DNS API 配置或域名解析"
+                    continue
+                }
+                break
+            else
+                echo "[✖] 输入错误，请重新选择验证方式"
+            fi
+        done
+
+        break  # 域名验证成功跳出循环
     done
 
-    # 安装 acme.sh
-    if ! command -v acme.sh &>/dev/null; then
-        echo ">>> 安装 acme.sh ..."
-        curl https://get.acme.sh | sh
-        source ~/.bashrc || true
-    fi
-    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    # 安装证书
+    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+        --ecc \
+        --key-file "$CERT_DIR/privkey.pem" \
+        --fullchain-file "$CERT_DIR/fullchain.pem" \
+        --reloadcmd "systemctl restart sing-box"
 
-    # 检查现有证书
-    LE_CERT_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-    LE_KEY_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
-    if [[ -f "$LE_CERT_PATH" && -f "$LE_KEY_PATH" ]]; then
-        echo "[✔] 已检测到现有 Let's Encrypt 证书，直接导入"
-        cp "$LE_CERT_PATH" "$CERT_DIR/fullchain.pem"
-        cp "$LE_KEY_PATH" "$CERT_DIR/privkey.pem"
-        chmod 644 "$CERT_DIR"/*.pem
-    else
-        echo ">>> 申请新的 Let's Encrypt TLS 证书"
-        /root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256 --force
-        /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
-            --key-file "$CERT_DIR/privkey.pem" \
-            --fullchain-file "$CERT_DIR/fullchain.pem" --force
-    fi
+    echo "[✔] 证书申请完成，已安装到 $CERT_DIR"
+
 else
     # --------- 自签固定域名模式 ---------
     DOMAIN="www.epple.com"
@@ -133,7 +137,7 @@ else
         -subj "/CN=$DOMAIN" \
         -addext "subjectAltName = DNS:$DOMAIN,IP:$SERVER_IPV4,IP:$SERVER_IPV6"
     chmod 644 "$CERT_DIR"/*.pem
-    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 VPS IP"
+    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 VPS 公网 IP"
 fi
 
 # --------- 随机端口函数 ---------
@@ -189,7 +193,7 @@ cat > /etc/sing-box/config.json <<EOF
 }
 EOF
 
-# --------- 防火墙端口开放（仅检测到 UFW 时） ---------
+# --------- 防火墙端口开放 ---------
 if command -v ufw &>/dev/null; then
     ufw allow 80/tcp
     ufw allow 443/tcp
