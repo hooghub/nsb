@@ -20,7 +20,7 @@ SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || curl -6 -s ifconfig.me)
 [[ -n "$SERVER_IPV6" ]] && echo "[✔] 检测到公网 IPv6: $SERVER_IPV6" || echo "[!] 未检测到公网 IPv6（可忽略）"
 
 # --------- 自动安装依赖 ---------
-REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat ufw)
+REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat cron ufw)
 MISSING_CMDS=()
 for cmd in "${REQUIRED_CMDS[@]}"; do
     command -v $cmd >/dev/null 2>&1 || MISSING_CMDS+=("$cmd")
@@ -50,7 +50,7 @@ for port in 80 443; do
     fi
 done
 
-read -rp "环境检查完成 ✅\n确认继续执行部署吗？(y/N): " CONFIRM
+read -rp "环境检查完成 ✅ 确认继续执行部署吗？(y/N): " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
 
 # --------- 模式选择 ---------
