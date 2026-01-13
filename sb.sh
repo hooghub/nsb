@@ -1,5 +1,5 @@
 #!/bin/bash
-# Sing-box 一键部署脚本 (完全双栈版)
+# Sing-box 一键部署脚本 (最终双栈版)
 # 支持域名模式 / 自签固定域名 www.epple.com
 # Author: Chis (优化 by ChatGPT)
 
@@ -11,9 +11,7 @@ echo "=================== Sing-box 部署前环境检查 ==================="
 [[ $EUID -ne 0 ]] && echo "[✖] 请用 root 权限运行" && exit 1 || echo "[✔] Root 权限 OK"
 
 # --------- 检测公网 IP ---------
-# 检测 IPv4
 SERVER_IPV4=$(curl -4 -s ipv4.icanhazip.com || curl -4 -s ifconfig.me)
-# 检测 IPv6
 SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || curl -6 -s ifconfig.me)
 
 [[ -n "$SERVER_IPV4" ]] && echo "[✔] 检测到公网 IPv4: $SERVER_IPV4" || echo "[✖] 未检测到公网 IPv4"
@@ -70,32 +68,32 @@ fi
 CERT_DIR="/etc/ssl/sing-box"
 mkdir -p "$CERT_DIR"
 
+# --------- 随机端口函数 ---------
+get_random_port() {
+    while :; do
+        PORT=$((RANDOM%50000+10000))
+        ss -tuln | grep -q $PORT || break
+    done
+    echo $PORT
+}
+
 # --------- 域名模式 ---------
 if [[ "$MODE" == "1" ]]; then
     while true; do
         read -rp "请输入你的域名 (例如: example.com): " DOMAIN
         [[ -z "$DOMAIN" ]] && { echo "[!] 域名不能为空"; continue; }
 
-        # 获取 A 记录 + AAAA 记录
         DOMAIN_IPV4=$(dig +short A "$DOMAIN" | tail -n1)
         DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
-        # 如果 IPv4 和 IPv6 都存在，检查是否至少一个匹配 VPS
-        if [[ -n "$SERVER_IPV4" && -n "$SERVER_IPV6" ]]; then
-            if [[ "$DOMAIN_IPV4" != "$SERVER_IPV4" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
-                echo "[!] IPv4/IPv6 解析都不匹配 VPS 公网 IP，请确认 A 或 AAAA 记录"
-                continue
-            fi
-        elif [[ -n "$SERVER_IPV4" ]]; then
-            [[ "$DOMAIN_IPV4" != "$SERVER_IPV4" ]] && echo "[!] IPv4 解析不匹配 VPS 公网 IPv4 ($SERVER_IPV4)，请确认 A 记录" && continue
-        elif [[ -n "$SERVER_IPV6" ]]; then
-            [[ "$DOMAIN_IPV6" != "$SERVER_IPV6" ]] && echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录" && continue
-        fi
-
-
-        if [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
-            echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录"
-            # 这里不强制退出，允许用户继续部署
+        # IPv4/IPv6 至少一条匹配 VPS
+        if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" == "$SERVER_IPV4" ]]; then
+            USE_LISTEN="--listen-v4"
+        elif [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" == "$SERVER_IPV6" ]]; then
+            USE_LISTEN="--listen-v6"
+        else
+            echo "[!] IPv4/IPv6 未匹配 VPS IP，继续部署可能导致证书申请失败"
+            USE_LISTEN="--listen-v4"
         fi
 
         echo "[✔] 域名解析检查完成 (IPv4: ${DOMAIN_IPV4:-无}, IPv6: ${DOMAIN_IPV6:-无})"
@@ -108,37 +106,17 @@ if [[ "$MODE" == "1" ]]; then
         curl https://get.acme.sh | sh
         source ~/.bashrc || true
     fi
-    /root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
+    ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-    # 检查现有证书
-    LE_CERT_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
-    LE_KEY_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
-    if [[ -f "$LE_CERT_PATH" && -f "$LE_KEY_PATH" ]]; then
-        echo "[✔] 已检测到现有 Let's Encrypt 证书，直接导入"
-        cp "$LE_CERT_PATH" "$CERT_DIR/fullchain.pem"
-        cp "$LE_KEY_PATH" "$CERT_DIR/privkey.pem"
-        chmod 644 "$CERT_DIR"/*.pem
-    else
-        echo ">>> 申请新的 Let's Encrypt TLS 证书"
-    
-    # IPv4 或 IPv6 自动选择
-    if [[ $USE_IPv4 -eq 1 ]]; then
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v4 --keylength ec-256 --force
-    elif [[ $USE_IPv6 -eq 1 ]]; then
-        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v6 --keylength ec-256 --force
-    fi
-    
-    # 直接安装到 sing-box 证书目录
+    echo ">>> 申请新的 Let's Encrypt TLS 证书"
+    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone $USE_LISTEN --keylength ec-256 --force
     ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
         --ecc \
         --key-file "$CERT_DIR/privkey.pem" \
         --fullchain-file "$CERT_DIR/fullchain.pem" \
         --force
-    
     chmod 644 "$CERT_DIR"/*.pem
     echo "[✔] TLS 证书申请完成"
-
-        fi
 else
     # --------- 自签固定域名模式 ---------
     DOMAIN="www.epple.com"
@@ -149,17 +127,8 @@ else
         -subj "/CN=$DOMAIN" \
         -addext "subjectAltName = DNS:$DOMAIN,IP:$SERVER_IPV4,IP:$SERVER_IPV6"
     chmod 644 "$CERT_DIR"/*.pem
-    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 VPS IP"
+    echo "[✔] 自签证书生成完成"
 fi
-
-# --------- 随机端口函数 ---------
-get_random_port() {
-    while :; do
-        PORT=$((RANDOM%50000+10000))
-        ss -tuln | grep -q $PORT || break
-    done
-    echo $PORT
-}
 
 # --------- 输入端口 ---------
 read -rp "请输入 VLESS TCP 端口 (默认 443, 输入0随机): " VLESS_PORT
@@ -167,34 +136,15 @@ read -rp "请输入 VLESS TCP 端口 (默认 443, 输入0随机): " VLESS_PORT
 read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_PORT
 [[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
 
-# --------- 自动生成 UUID 和 HY2 密码 ---------
-UUID=$(cat /proc/sys/kernel/random/uuid)
-HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
-
-# --------- 生成 sing-box 配置（IPv4 + IPv6 双栈，不冲突端口） ---------
-
-# 如果用户输入端口为 0 或空，则随机生成两个端口
-get_random_port() {
-    while :; do
-        PORT=$((RANDOM%50000+10000))
-        ss -tuln | grep -q $PORT || break
-    done
-    echo $PORT
-}
-
-# IPv4 端口
-[[ -z "$VLESS_PORT" || "$VLESS_PORT" == "0" ]] && VLESS_PORT=$(get_random_port)
-[[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
-
-# IPv6 端口（确保和 IPv4 不同）
+# IPv6 端口
 VLESS6_PORT=$(get_random_port)
 HY2_6_PORT=$(get_random_port)
 
-# 生成 UUID 和 Hysteria2 密码
+# 自动生成 UUID / Hysteria2 密码
 UUID=$(cat /proc/sys/kernel/random/uuid)
 HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
 
-# 生成 sing-box 配置 JSON
+# --------- 生成 sing-box 配置 ---------
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": { "level": "info" },
@@ -252,18 +202,18 @@ cat > /etc/sing-box/config.json <<EOF
 }
 EOF
 
-echo "[✔] sing-box 配置生成完成：IPv4 + IPv6 双栈，端口自动分配，避免冲突"
+echo "[✔] sing-box 配置生成完成：IPv4 + IPv6 双栈"
 echo "VLESS TCP IPv4: $VLESS_PORT, IPv6: $VLESS6_PORT"
 echo "Hysteria2 UDP IPv4: $HY2_PORT, IPv6: $HY2_6_PORT"
 
-
-
-# --------- 防火墙端口开放（仅检测到 UFW 时） ---------
+# --------- 防火墙端口开放 ---------
 if command -v ufw &>/dev/null; then
     ufw allow 80/tcp
     ufw allow 443/tcp
     ufw allow "$VLESS_PORT"/tcp
+    ufw allow "$VLESS6_PORT"/tcp
     ufw allow "$HY2_PORT"/udp
+    ufw allow "$HY2_6_PORT"/udp
     ufw reload || true
 fi
 
@@ -273,27 +223,22 @@ systemctl restart sing-box
 sleep 3
 
 # --------- 检查端口监听 ---------
-[[ -n "$(ss -tulnp | grep $VLESS_PORT)" ]] && echo "[✔] VLESS TCP $VLESS_PORT 已监听" || echo "[✖] VLESS TCP $VLESS_PORT 未监听"
-[[ -n "$(ss -ulnp | grep $HY2_PORT)" ]] && echo "[✔] Hysteria2 UDP $HY2_PORT 已监听" || echo "[✖] Hysteria2 UDP $HY2_PORT 未监听"
+[[ -n "$(ss -tulnp | grep $VLESS_PORT)" ]] && echo "[✔] VLESS TCP IPv4 已监听" || echo "[✖] VLESS TCP IPv4 未监听"
+[[ -n "$(ss -tulnp | grep $VLESS6_PORT)" ]] && echo "[✔] VLESS TCP IPv6 已监听" || echo "[✖] VLESS TCP IPv6 未监听"
+[[ -n "$(ss -ulnp | grep $HY2_PORT)" ]] && echo "[✔] Hysteria2 UDP IPv4 已监听" || echo "[✖] Hysteria2 UDP IPv4 未监听"
+[[ -n "$(ss -ulnp | grep $HY2_6_PORT)" ]] && echo "[✔] Hysteria2 UDP IPv6 已监听" || echo "[✖] Hysteria2 UDP IPv6 未监听"
 
 # --------- 生成节点 URI 和二维码 ---------
-if [[ "$MODE" == "1" ]]; then
-    NODE_HOST="$DOMAIN"
-    INSECURE="0"
-else
-    NODE_HOST="$SERVER_IPV4"
-    INSECURE="1"
-fi
-
+NODE_HOST="$DOMAIN"
 VLESS_URI="vless://$UUID@$NODE_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$DOMAIN&type=tcp#VLESS-$NODE_HOST"
-HY2_URI="hysteria2://$HY2_PASS@$NODE_HOST:$HY2_PORT?insecure=$INSECURE&sni=$DOMAIN#HY2-$NODE_HOST"
+HY2_URI="hysteria2://$HY2_PASS@$NODE_HOST:$HY2_PORT?insecure=0&sni=$DOMAIN#HY2-$NODE_HOST"
 
 echo -e "\n=================== VLESS 节点 ==================="
-echo -e "$VLESS_URI\n"
+echo "$VLESS_URI"
 command -v qrencode &>/dev/null && echo "$VLESS_URI" | qrencode -t ansiutf8
 
 echo -e "\n=================== Hysteria2 节点 ==================="
-echo -e "$HY2_URI\n"
+echo "$HY2_URI"
 command -v qrencode &>/dev/null && echo "$HY2_URI" | qrencode -t ansiutf8
 
 # --------- 生成订阅 JSON ---------
