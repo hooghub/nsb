@@ -157,7 +157,7 @@ read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_POR
 UUID=$(cat /proc/sys/kernel/random/uuid)
 HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
 
-# --------- 生成 sing-box 配置 ---------
+# --------- 生成 sing-box 配置（IPv4 + IPv6 双栈） ---------
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": { "level": "info" },
@@ -165,6 +165,18 @@ cat > /etc/sing-box/config.json <<EOF
     {
       "type": "vless",
       "listen": "0.0.0.0",
+      "listen_port": $VLESS_PORT,
+      "users": [{ "uuid": "$UUID" }],
+      "tls": {
+        "enabled": true,
+        "server_name": "$DOMAIN",
+        "certificate_path": "$CERT_DIR/fullchain.pem",
+        "key_path": "$CERT_DIR/privkey.pem"
+      }
+    },
+    {
+      "type": "vless",
+      "listen": "::",
       "listen_port": $VLESS_PORT,
       "users": [{ "uuid": "$UUID" }],
       "tls": {
@@ -185,11 +197,24 @@ cat > /etc/sing-box/config.json <<EOF
         "certificate_path": "$CERT_DIR/fullchain.pem",
         "key_path": "$CERT_DIR/privkey.pem"
       }
+    },
+    {
+      "type": "hysteria2",
+      "listen": "::",
+      "listen_port": $HY2_PORT,
+      "users": [{ "password": "$HY2_PASS" }],
+      "tls": {
+        "enabled": true,
+        "server_name": "$DOMAIN",
+        "certificate_path": "$CERT_DIR/fullchain.pem",
+        "key_path": "$CERT_DIR/privkey.pem"
+      }
     }
   ],
   "outbounds": [{ "type": "direct" }]
 }
 EOF
+
 
 # --------- 防火墙端口开放（仅检测到 UFW 时） ---------
 if command -v ufw &>/dev/null; then
