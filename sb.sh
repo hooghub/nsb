@@ -1,6 +1,6 @@
 #!/bin/bash
-# Sing-box 一键部署脚本 (最终增强版)
-# 支持：域名模式 / 自签固定域名 www.epple.com (URI 使用公网 IP)
+# Sing-box 一键部署脚本 (完全双栈版)
+# 支持域名模式 / 自签固定域名 www.epple.com
 # Author: Chis (优化 by ChatGPT)
 
 set -e
@@ -13,14 +13,11 @@ echo "=================== Sing-box 部署前环境检查 ==================="
 # --------- 检测公网 IP ---------
 # 检测 IPv4
 SERVER_IPV4=$(curl -4 -s ipv4.icanhazip.com || curl -4 -s ifconfig.me)
-
 # 检测 IPv6
 SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || curl -6 -s ifconfig.me)
 
-# 输出结果
 [[ -n "$SERVER_IPV4" ]] && echo "[✔] 检测到公网 IPv4: $SERVER_IPV4" || echo "[✖] 未检测到公网 IPv4"
 [[ -n "$SERVER_IPV6" ]] && echo "[✔] 检测到公网 IPv6: $SERVER_IPV6" || echo "[!] 未检测到公网 IPv6（可忽略）"
-
 
 # --------- 自动安装依赖 ---------
 REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat ufw)
@@ -57,9 +54,12 @@ read -rp "环境检查完成 ✅\n确认继续执行部署吗？(y/N): " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
 
 # --------- 模式选择 ---------
-echo -e "\n请选择部署模式：\n1) 使用域名 + Let's Encrypt 证书\n2) 使用公网 IP + 自签固定域名 www.epple.com"
-read -rp "请输入选项 (1 或 2): " MODE
-[[ "$MODE" =~ ^[12]$ ]] || { echo "[✖] 输入错误"; exit 1; }
+while true; do
+    echo -e "\n请选择部署模式：\n1) 使用域名 + Let's Encrypt 证书\n2) 使用公网 IP + 自签固定域名 www.epple.com"
+    read -rp "请输入选项 (1 或 2): " MODE
+    [[ "$MODE" =~ ^[12]$ ]] && break
+    echo "[!] 输入错误，请重新输入 1 或 2"
+done
 
 # --------- 安装 sing-box ---------
 if ! command -v sing-box &>/dev/null; then
@@ -72,13 +72,33 @@ mkdir -p "$CERT_DIR"
 
 # --------- 域名模式 ---------
 if [[ "$MODE" == "1" ]]; then
-    read -rp "请输入你的域名 (例如: example.com): " DOMAIN
-    [[ -z "$DOMAIN" ]] && { echo "[✖] 域名不能为空"; exit 1; }
+    while true; do
+        read -rp "请输入你的域名 (例如: example.com): " DOMAIN
+        [[ -z "$DOMAIN" ]] && { echo "[!] 域名不能为空"; continue; }
 
-    DOMAIN_IP=$(dig +short A "$DOMAIN" | tail -n1)
-    [[ -z "$DOMAIN_IP" ]] && { echo "[✖] 域名未解析"; exit 1; }
-    [[ "$DOMAIN_IP" != "$SERVER_IP" ]] && { echo "[✖] 域名解析 $DOMAIN_IP 与 VPS IP $SERVER_IP 不符"; exit 1; }
-    echo "[✔] 域名解析正常"
+        # 获取 A 记录 + AAAA 记录
+        DOMAIN_IPV4=$(dig +short A "$DOMAIN" | tail -n1)
+        DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
+
+        # 检查解析
+        if [[ -z "$DOMAIN_IPV4" && -z "$DOMAIN_IPV6" ]]; then
+            echo "[!] 域名未解析，请确认 DNS 设置正确"
+            continue
+        fi
+
+        if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" != "$SERVER_IPV4" ]]; then
+            echo "[!] IPv4 解析不匹配 VPS 公网 IPv4 ($SERVER_IPV4)，请确认 A 记录"
+            continue
+        fi
+
+        if [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
+            echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录"
+            # 这里不强制退出，允许用户继续部署
+        fi
+
+        echo "[✔] 域名解析检查完成 (IPv4: ${DOMAIN_IPV4:-无}, IPv6: ${DOMAIN_IPV6:-无})"
+        break
+    done
 
     # 安装 acme.sh
     if ! command -v acme.sh &>/dev/null; then
@@ -92,7 +112,7 @@ if [[ "$MODE" == "1" ]]; then
     LE_CERT_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
     LE_KEY_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
     if [[ -f "$LE_CERT_PATH" && -f "$LE_KEY_PATH" ]]; then
-        echo "[✔] 已检测到现有 Let’s Encrypt 证书，直接导入"
+        echo "[✔] 已检测到现有 Let's Encrypt 证书，直接导入"
         cp "$LE_CERT_PATH" "$CERT_DIR/fullchain.pem"
         cp "$LE_KEY_PATH" "$CERT_DIR/privkey.pem"
         chmod 644 "$CERT_DIR"/*.pem
@@ -111,9 +131,9 @@ else
         -keyout "$CERT_DIR/privkey.pem" \
         -out "$CERT_DIR/fullchain.pem" \
         -subj "/CN=$DOMAIN" \
-        -addext "subjectAltName = DNS:$DOMAIN,IP:$SERVER_IP"
+        -addext "subjectAltName = DNS:$DOMAIN,IP:$SERVER_IPV4,IP:$SERVER_IPV6"
     chmod 644 "$CERT_DIR"/*.pem
-    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 $SERVER_IP"
+    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 VPS IP"
 fi
 
 # --------- 随机端口函数 ---------
@@ -192,7 +212,7 @@ if [[ "$MODE" == "1" ]]; then
     NODE_HOST="$DOMAIN"
     INSECURE="0"
 else
-    NODE_HOST="$SERVER_IP"
+    NODE_HOST="$SERVER_IPV4"
     INSECURE="1"
 fi
 
