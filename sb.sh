@@ -222,11 +222,20 @@ systemctl enable sing-box
 systemctl restart sing-box
 sleep 3
 
-# --------- 检查端口监听 ---------
-[[ -n "$(ss -tulnp | grep $VLESS_PORT)" ]] && echo "[✔] VLESS TCP IPv4 已监听" || echo "[✖] VLESS TCP IPv4 未监听"
-[[ -n "$(ss -tulnp | grep $VLESS6_PORT)" ]] && echo "[✔] VLESS TCP IPv6 已监听" || echo "[✖] VLESS TCP IPv6 未监听"
-[[ -n "$(ss -ulnp | grep $HY2_PORT)" ]] && echo "[✔] Hysteria2 UDP IPv4 已监听" || echo "[✖] Hysteria2 UDP IPv4 未监听"
-[[ -n "$(ss -ulnp | grep $HY2_6_PORT)" ]] && echo "[✔] Hysteria2 UDP IPv6 已监听" || echo "[✖] Hysteria2 UDP IPv6 未监听"
+# --------- 检查端口监听并显示信息 ---------
+echo "[*] 检查 VLESS/Hysteria2 端口监听状态："
+
+echo -n "VLESS TCP IPv4 ($VLESS_PORT): "
+ss -tulnp | grep ":$VLESS_PORT" || echo "[✖] 未监听"
+
+echo -n "VLESS TCP IPv6 ($VLESS6_PORT): "
+ss -tulnp | grep ":$VLESS6_PORT" || echo "[✖] 未监听"
+
+echo -n "Hysteria2 UDP IPv4 ($HY2_PORT): "
+ss -ulnp | grep ":$HY2_PORT" || echo "[✖] 未监听"
+
+echo -n "Hysteria2 UDP IPv6 ($HY2_6_PORT): "
+ss -ulnp | grep ":$HY2_6_PORT" || echo "[✖] 未监听"
 
 # --------- 生成节点 URI 和二维码 ---------
 NODE_HOST="$DOMAIN"
