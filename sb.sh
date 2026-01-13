@@ -80,16 +80,18 @@ if [[ "$MODE" == "1" ]]; then
         DOMAIN_IPV4=$(dig +short A "$DOMAIN" | tail -n1)
         DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
-        # 检查解析
-        if [[ -z "$DOMAIN_IPV4" && -z "$DOMAIN_IPV6" ]]; then
-            echo "[!] 域名未解析，请确认 DNS 设置正确"
-            continue
+        # 如果 IPv4 和 IPv6 都存在，检查是否至少一个匹配 VPS
+        if [[ -n "$SERVER_IPV4" && -n "$SERVER_IPV6" ]]; then
+            if [[ "$DOMAIN_IPV4" != "$SERVER_IPV4" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
+                echo "[!] IPv4/IPv6 解析都不匹配 VPS 公网 IP，请确认 A 或 AAAA 记录"
+                continue
+            fi
+        elif [[ -n "$SERVER_IPV4" ]]; then
+            [[ "$DOMAIN_IPV4" != "$SERVER_IPV4" ]] && echo "[!] IPv4 解析不匹配 VPS 公网 IPv4 ($SERVER_IPV4)，请确认 A 记录" && continue
+        elif [[ -n "$SERVER_IPV6" ]]; then
+            [[ "$DOMAIN_IPV6" != "$SERVER_IPV6" ]] && echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录" && continue
         fi
 
-        if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" != "$SERVER_IPV4" ]]; then
-            echo "[!] IPv4 解析不匹配 VPS 公网 IPv4 ($SERVER_IPV4)，请确认 A 记录"
-            continue
-        fi
 
         if [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" != "$SERVER_IPV6" ]]; then
             echo "[!] IPv6 解析不匹配 VPS 公网 IPv6 ($SERVER_IPV6)，请确认 AAAA 记录"
