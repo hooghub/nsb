@@ -87,6 +87,7 @@ if [[ "$MODE" == "1" ]]; then
         DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
         # IPv4/IPv6 至少一条匹配 VPS
+        USE_LISTEN=""
         if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" == "$SERVER_IPV4" ]]; then
             USE_LISTEN="--listen-v4"
         elif [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" == "$SERVER_IPV6" ]]; then
@@ -108,15 +109,26 @@ if [[ "$MODE" == "1" ]]; then
     fi
     ~/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-    echo ">>> 申请新的 Let's Encrypt TLS 证书"
-    ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone $USE_LISTEN --keylength ec-256 --force
-    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-        --ecc \
-        --key-file "$CERT_DIR/privkey.pem" \
-        --fullchain-file "$CERT_DIR/fullchain.pem" \
-        --force
-    chmod 644 "$CERT_DIR"/*.pem
-    echo "[✔] TLS 证书申请完成"
+    # --------- 检查是否已有证书 ---------
+    LE_CERT_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/fullchain.cer"
+    LE_KEY_PATH="$HOME/.acme.sh/${DOMAIN}_ecc/${DOMAIN}.key"
+
+    if [[ -f "$LE_CERT_PATH" && -f "$LE_KEY_PATH" ]]; then
+        echo "[✔] 已检测到现有 Let's Encrypt 证书，直接导入"
+        cp "$LE_CERT_PATH" "$CERT_DIR/fullchain.pem"
+        cp "$LE_KEY_PATH" "$CERT_DIR/privkey.pem"
+        chmod 644 "$CERT_DIR"/*.pem
+    else
+        echo ">>> 申请新的 Let's Encrypt TLS 证书"
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone $USE_LISTEN --keylength ec-256 --force
+        ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+            --ecc \
+            --key-file "$CERT_DIR/privkey.pem" \
+            --fullchain-file "$CERT_DIR/fullchain.pem" \
+            --force
+        chmod 644 "$CERT_DIR"/*.pem
+        echo "[✔] TLS 证书申请完成"
+    fi
 else
     # --------- 自签固定域名模式 ---------
     DOMAIN="www.epple.com"
@@ -136,7 +148,7 @@ read -rp "请输入 VLESS TCP 端口 (默认 443, 输入0随机): " VLESS_PORT
 read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_PORT
 [[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
 
-# IPv6 端口
+# IPv6 端口（确保不同于 IPv4）
 VLESS6_PORT=$(get_random_port)
 HY2_6_PORT=$(get_random_port)
 
@@ -224,18 +236,10 @@ sleep 3
 
 # --------- 检查端口监听并显示信息 ---------
 echo "[*] 检查 VLESS/Hysteria2 端口监听状态："
-
-echo -n "VLESS TCP IPv4 ($VLESS_PORT): "
-ss -tulnp | grep ":$VLESS_PORT" || echo "[✖] 未监听"
-
-echo -n "VLESS TCP IPv6 ($VLESS6_PORT): "
-ss -tulnp | grep ":$VLESS6_PORT" || echo "[✖] 未监听"
-
-echo -n "Hysteria2 UDP IPv4 ($HY2_PORT): "
-ss -ulnp | grep ":$HY2_PORT" || echo "[✖] 未监听"
-
-echo -n "Hysteria2 UDP IPv6 ($HY2_6_PORT): "
-ss -ulnp | grep ":$HY2_6_PORT" || echo "[✖] 未监听"
+ss -tulnp | grep ":$VLESS_PORT" >/dev/null 2>&1 && echo "[✔] VLESS TCP IPv4（$VLESS_PORT） 已监听" || echo "[✖] VLESS TCP IPv4（$VLESS_PORT） 未监听"
+ss -tulnp | grep ":$VLESS6_PORT" >/dev/null 2>&1 && echo "[✔] VLESS TCP IPv6（$VLESS6_PORT） 已监听" || echo "[✖] VLESS TCP IPv6（$VLESS6_PORT） 未监听"
+ss -ulnp | grep ":$HY2_PORT" >/dev/null 2>&1 && echo "[✔] Hysteria2 UDP IPv4（$HY2_PORT） 已监听" || echo "[✖] Hysteria2 UDP IPv4（$HY2_PORT） 未监听"
+ss -ulnp | grep ":$HY2_6_PORT" >/dev/null 2>&1 && echo "[✔] Hysteria2 UDP IPv6（$HY2_6_PORT） 已监听" || echo "[✖] Hysteria2 UDP IPv6（$HY2_6_PORT） 未监听"
 
 # --------- 生成节点 URI 和二维码 ---------
 NODE_HOST="$DOMAIN"
