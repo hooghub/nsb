@@ -86,17 +86,6 @@ if [[ "$MODE" == "1" ]]; then
         DOMAIN_IPV4=$(dig +short A "$DOMAIN" | tail -n1)
         DOMAIN_IPV6=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
-        # IPv4/IPv6 至少一条匹配 VPS
-        USE_LISTEN=""
-        if [[ -n "$SERVER_IPV4" && "$DOMAIN_IPV4" == "$SERVER_IPV4" ]]; then
-            USE_LISTEN="--listen-v4"
-        elif [[ -n "$SERVER_IPV6" && "$DOMAIN_IPV6" == "$SERVER_IPV6" ]]; then
-            USE_LISTEN="--listen-v6"
-        else
-            echo "[!] IPv4/IPv6 未匹配 VPS IP，继续部署可能导致证书申请失败"
-            USE_LISTEN="--listen-v4"
-        fi
-
         echo "[✔] 域名解析检查完成 (IPv4: ${DOMAIN_IPV4:-无}, IPv6: ${DOMAIN_IPV6:-无})"
         break
     done
@@ -120,6 +109,17 @@ if [[ "$MODE" == "1" ]]; then
         chmod 644 "$CERT_DIR"/*.pem
     else
         echo ">>> 申请新的 Let's Encrypt TLS 证书"
+
+        # 自动选择可用 IP 协议
+        if [[ -n "$SERVER_IPV4" ]]; then
+            USE_LISTEN="--listen-v4"
+        elif [[ -n "$SERVER_IPV6" ]]; then
+            USE_LISTEN="--listen-v6"
+        else
+            echo "[✖] 未检测到可用 IPv4 或 IPv6，无法申请证书"
+            exit 1
+        fi
+
         ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone $USE_LISTEN --keylength ec-256 --force
         ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
             --ecc \
@@ -148,7 +148,7 @@ read -rp "请输入 VLESS TCP 端口 (默认 443, 输入0随机): " VLESS_PORT
 read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_PORT
 [[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
 
-# IPv6 端口（确保不同于 IPv4）
+# IPv6 端口
 VLESS6_PORT=$(get_random_port)
 HY2_6_PORT=$(get_random_port)
 
@@ -215,8 +215,6 @@ cat > /etc/sing-box/config.json <<EOF
 EOF
 
 echo "[✔] sing-box 配置生成完成：IPv4 + IPv6 双栈"
-echo "VLESS TCP IPv4: $VLESS_PORT, IPv6: $VLESS6_PORT"
-echo "Hysteria2 UDP IPv4: $HY2_PORT, IPv6: $HY2_6_PORT"
 
 # --------- 防火墙端口开放 ---------
 if command -v ufw &>/dev/null; then
@@ -235,16 +233,22 @@ systemctl restart sing-box
 sleep 3
 
 # --------- 检查端口监听并显示信息 ---------
-echo "[*] 检查 VLESS/Hysteria2 端口监听状态："
 ss -tulnp | grep ":$VLESS_PORT" >/dev/null 2>&1 && echo "[✔] VLESS TCP IPv4（$VLESS_PORT） 已监听" || echo "[✖] VLESS TCP IPv4（$VLESS_PORT） 未监听"
 ss -tulnp | grep ":$VLESS6_PORT" >/dev/null 2>&1 && echo "[✔] VLESS TCP IPv6（$VLESS6_PORT） 已监听" || echo "[✖] VLESS TCP IPv6（$VLESS6_PORT） 未监听"
 ss -ulnp | grep ":$HY2_PORT" >/dev/null 2>&1 && echo "[✔] Hysteria2 UDP IPv4（$HY2_PORT） 已监听" || echo "[✖] Hysteria2 UDP IPv4（$HY2_PORT） 未监听"
 ss -ulnp | grep ":$HY2_6_PORT" >/dev/null 2>&1 && echo "[✔] Hysteria2 UDP IPv6（$HY2_6_PORT） 已监听" || echo "[✖] Hysteria2 UDP IPv6（$HY2_6_PORT） 未监听"
 
 # --------- 生成节点 URI 和二维码 ---------
-NODE_HOST="$DOMAIN"
+if [[ "$MODE" == "1" ]]; then
+    NODE_HOST="$DOMAIN"
+    INSECURE="0"
+else
+    NODE_HOST="$SERVER_IPV4"
+    INSECURE="1"
+fi
+
 VLESS_URI="vless://$UUID@$NODE_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$DOMAIN&type=tcp#VLESS-$NODE_HOST"
-HY2_URI="hysteria2://$HY2_PASS@$NODE_HOST:$HY2_PORT?insecure=0&sni=$DOMAIN#HY2-$NODE_HOST"
+HY2_URI="hysteria2://$HY2_PASS@$NODE_HOST:$HY2_PORT?insecure=$INSECURE&sni=$DOMAIN#HY2-$NODE_HOST"
 
 echo -e "\n=================== VLESS 节点 ==================="
 echo "$VLESS_URI"
