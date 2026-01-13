@@ -119,22 +119,25 @@ if [[ "$MODE" == "1" ]]; then
         cp "$LE_KEY_PATH" "$CERT_DIR/privkey.pem"
         chmod 644 "$CERT_DIR"/*.pem
     else
-            echo ">>> 申请新的 Let's Encrypt TLS 证书"
+        echo ">>> 申请新的 Let's Encrypt TLS 证书"
     
-    # 如果 VPS IPv4 匹配域名 A 记录
+    # IPv4 或 IPv6 自动选择
     if [[ $USE_IPv4 -eq 1 ]]; then
-        /root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v4 --keylength ec-256 --force
-    # 如果 VPS IPv6 匹配域名 AAAA 记录
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v4 --keylength ec-256 --force
     elif [[ $USE_IPv6 -eq 1 ]]; then
-        /root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v6 --keylength ec-256 --force
+        ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --listen-v6 --keylength ec-256 --force
     fi
     
-    # 安装证书到 sing-box
-    /root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+    # 直接安装到 sing-box 证书目录
+    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
+        --ecc \
         --key-file "$CERT_DIR/privkey.pem" \
-        --fullchain-file "$CERT_DIR/fullchain.pem" --force
+        --fullchain-file "$CERT_DIR/fullchain.pem" \
+        --force
+    
     chmod 644 "$CERT_DIR"/*.pem
     echo "[✔] TLS 证书申请完成"
+
         fi
 else
     # --------- 自签固定域名模式 ---------
