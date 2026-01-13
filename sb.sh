@@ -50,7 +50,7 @@ for port in 80 443; do
     fi
 done
 
-read -rp "环境检查完成 ✅ 确认继续执行部署吗？(y/N): " CONFIRM
+read -rp "环境检查完成 ✅  确认继续执行部署吗？(y/N): " CONFIRM
 [[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
 
 # --------- 模式选择 ---------
