@@ -1,247 +1,159 @@
 #!/bin/bash
-# Sing-box 完全双栈部署增强版
-# 支持：域名模式 + HTTP/DNS 验证 / 自签固定域名
-# Author: Chis (优化 by ChatGPT)
-
 set -e
 
-echo "=================== Sing-box 部署前环境检查 ==================="
+echo "=================== Sing-box 双栈部署（最终增强版） ==================="
 
-# --------- 检查 root ---------
-[[ $EUID -ne 0 ]] && echo "[✖] 请用 root 权限运行" && exit 1 || echo "[✔] Root 权限 OK"
+# ---------- Root ----------
+[[ $EUID -ne 0 ]] && echo "[✖] 请使用 root 运行" && exit 1
+echo "[✔] Root 权限 OK"
 
-# --------- 检测公网 IP ---------
-SERVER_IPV4=$(curl -4 -s ipv4.icanhazip.com || curl -4 -s ifconfig.me)
-SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || curl -6 -s ifconfig.me)
-[[ -n "$SERVER_IPV4" ]] && echo "[✔] 检测到公网 IPv4: $SERVER_IPV4" || echo "[!] 未检测到公网 IPv4"
-[[ -n "$SERVER_IPV6" ]] && echo "[✔] 检测到公网 IPv6: $SERVER_IPV6" || echo "[!] 未检测到公网 IPv6（可忽略）"
+# ---------- 公网 IP ----------
+SERVER_IPV4=$(curl -4 -s ipv4.icanhazip.com || true)
+SERVER_IPV6=$(curl -6 -s ipv6.icanhazip.com || true)
 
-# --------- 自动安装依赖 ---------
-REQUIRED_CMDS=(curl ss openssl qrencode dig systemctl bash socat ufw)
-MISSING_CMDS=()
-for cmd in "${REQUIRED_CMDS[@]}"; do
-    command -v $cmd >/dev/null 2>&1 || MISSING_CMDS+=("$cmd")
-done
+[[ -n "$SERVER_IPV4" ]] && echo "[✔] 公网 IPv4: $SERVER_IPV4" || echo "[!] 未检测到 IPv4"
+[[ -n "$SERVER_IPV6" ]] && echo "[✔] 公网 IPv6: $SERVER_IPV6" || echo "[!] 未检测到 IPv6"
 
-if [[ ${#MISSING_CMDS[@]} -gt 0 ]]; then
-    echo "[!] 检测到缺失命令: ${MISSING_CMDS[*]}"
-    echo "[!] 自动安装依赖中..."
-    apt update -y
-    INSTALL_PACKAGES=()
-    for cmd in "${MISSING_CMDS[@]}"; do
-        case "$cmd" in
-            dig) INSTALL_PACKAGES+=("dnsutils") ;;
-            qrencode|socat|ufw) INSTALL_PACKAGES+=("$cmd") ;;
-            *) INSTALL_PACKAGES+=("$cmd") ;;
-        esac
-    done
-    apt install -y "${INSTALL_PACKAGES[@]}"
+# ---------- 依赖 ----------
+REQ=(curl ss openssl qrencode dig systemctl socat ufw)
+MISS=()
+for c in "${REQ[@]}"; do command -v "$c" >/dev/null 2>&1 || MISS+=("$c"); done
+if [[ ${#MISS[@]} -gt 0 ]]; then
+  echo "[!] 安装依赖: ${MISS[*]}"
+  apt update -y
+  apt install -y "${MISS[@]/dig/dnsutils}"
 fi
 
-# --------- 检查常用端口 ---------
-for port in 80 443; do
-    if ss -tuln | grep -q ":$port"; then
-        echo "[✖] 端口 $port 已被占用"
-    else
-        echo "[✔] 端口 $port 空闲"
-    fi
+# ---------- 端口 ----------
+for p in 80 443; do
+  ss -tuln | grep -q ":$p" && echo "[!] 端口 $p 被占用" || echo "[✔] 端口 $p 空闲"
 done
 
-read -rp "环境检查完成 ✅ 确认继续执行部署吗？(y/N): " CONFIRM
-[[ "$CONFIRM" =~ ^[Yy]$ ]] || exit 0
+read -rp "继续部署？(y/N): " GO
+[[ "$GO" =~ ^[Yy]$ ]] || exit 0
 
-# --------- 模式选择 ---------
-while true; do
-    echo -e "\n请选择部署模式：\n1) 使用域名 + TLS 证书\n2) 使用公网 IP + 自签固定域名 www.epple.com"
-    read -rp "请输入选项 (1 或 2): " MODE
-    [[ "$MODE" =~ ^[12]$ ]] && break
-    echo "[✖] 输入错误，请重新选择"
-done
+# ---------- 安装 sing-box ----------
+command -v sing-box >/dev/null 2>&1 || bash <(curl -fsSL https://sing-box.app/deb-install.sh)
 
 CERT_DIR="/etc/ssl/sing-box"
 mkdir -p "$CERT_DIR"
 
-# --------- 安装 sing-box ---------
-if ! command -v sing-box &>/dev/null; then
-    echo ">>> 安装 sing-box ..."
-    bash <(curl -fsSL https://sing-box.app/deb-install.sh)
-fi
+# ---------- 域名 ----------
+while true; do
+  read -rp "请输入域名: " DOMAIN
+  [[ -z "$DOMAIN" ]] && echo "域名不能为空" && continue
 
-# --------- 域名模式 ---------
-if [[ "$MODE" == "1" ]]; then
-    while true; do
-        read -rp "请输入你的域名 (例如: example.com): " DOMAIN
-        [[ -z "$DOMAIN" ]] && echo "[✖] 域名不能为空" && continue
+  A=$(dig +short A "$DOMAIN" | tail -n1)
+  AAAA=$(dig +short AAAA "$DOMAIN" | tail -n1)
 
-        DOMAIN_A=$(dig +short A "$DOMAIN" | tail -n1)
-        DOMAIN_AAAA=$(dig +short AAAA "$DOMAIN" | tail -n1)
+  [[ -z "$A" && -z "$AAAA" ]] && echo "域名未解析" && continue
 
-        if [[ -z "$DOMAIN_A" && -z "$DOMAIN_AAAA" ]]; then
-            echo "[✖] 域名未解析，请检查 DNS" 
-            continue
-        fi
+  MATCH=0
+  [[ -n "$A" && "$A" == "$SERVER_IPV4" ]] && MATCH=1
+  [[ -n "$AAAA" && "$AAAA" == "$SERVER_IPV6" ]] && MATCH=1
 
-        echo "[✔] 域名解析结果：A=$DOMAIN_A AAAA=$DOMAIN_AAAA"
+  echo "[解析] A=$A AAAA=$AAAA"
+  [[ "$MATCH" == "1" ]] && break
 
-        # 选择验证方式
-        while true; do
-            echo -e "\n请选择证书验证方式："
-            echo "1) HTTP 验证（Standalone 模式，80端口必须空闲）"
-            echo "2) DNS 验证（推荐 IPv6 / 端口占用场景）"
-            read -rp "请输入选项 (1 或 2): " VAL_METHOD
+  echo "[✖] 域名未指向本机 IPv4 或 IPv6，重试"
+done
 
-            if [[ "$VAL_METHOD" == "1" ]]; then
-                echo ">>> 使用 HTTP 验证 (Standalone 模式)"
-                # 检查 80 端口
-                if ss -tuln | grep -q ":80"; then
-                    echo "[✖] 80 端口被占用，无法使用 HTTP 验证，请选择 DNS 验证或释放端口"
-                    continue
-                fi
-                ~/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256 || {
-                    echo "[✖] HTTP 验证失败，请检查端口或重新选择验证方式"
-                    continue
-                }
-                break
-            elif [[ "$VAL_METHOD" == "2" ]]; then
-                echo ">>> 使用 DNS 验证（推荐 IPv6 / 端口占用场景）"
-                echo "[!] 请确保已配置好 DNS API 环境变量（Cloudflare CF_Key / CF_Email / CF_Token）"
-                ~/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --keylength ec-256 || {
-                    echo "[✖] DNS 验证失败，请检查 DNS API 配置或域名解析"
-                    continue
-                }
-                break
-            else
-                echo "[✖] 输入错误，请重新选择验证方式"
-            fi
-        done
+# ---------- Cloudflare 判断 ----------
+IS_CF=0
+dig +short NS "$DOMAIN" | grep -qi cloudflare && IS_CF=1
 
-        break  # 域名验证成功跳出循环
-    done
+# ---------- 推荐验证 ----------
+RECOMMEND="HTTP"
+ss -tuln | grep -q ":80" && RECOMMEND="DNS"
+[[ -z "$SERVER_IPV4" && -n "$SERVER_IPV6" ]] && RECOMMEND="DNS"
+echo "[建议] 推荐验证方式: $RECOMMEND"
 
-    # 安装证书
-    ~/.acme.sh/acme.sh --install-cert -d "$DOMAIN" \
-        --ecc \
-        --key-file "$CERT_DIR/privkey.pem" \
-        --fullchain-file "$CERT_DIR/fullchain.pem" \
-        --reloadcmd "systemctl restart sing-box"
+# ---------- 安装 acme.sh ----------
+command -v acme.sh >/dev/null 2>&1 || curl https://get.acme.sh | sh
+/root/.acme.sh/acme.sh --set-default-ca --server letsencrypt
 
-    echo "[✔] 证书申请完成，已安装到 $CERT_DIR"
+# ---------- 证书申请 ----------
+while true; do
+  echo "1) HTTP 验证"
+  echo "2) DNS 验证"
+  read -rp "选择 (1/2): " VM
 
-else
-    # --------- 自签固定域名模式 ---------
-    DOMAIN="www.epple.com"
-    echo "[!] 自签模式，将生成固定域名 $DOMAIN 的自签证书 (URI 使用 VPS 公网 IP)"
-    openssl req -x509 -nodes -days 365 -newkey rsa:2048 \
-        -keyout "$CERT_DIR/privkey.pem" \
-        -out "$CERT_DIR/fullchain.pem" \
-        -subj "/CN=$DOMAIN" \
-        -addext "subjectAltName = DNS:$DOMAIN,IP:$SERVER_IPV4,IP:$SERVER_IPV6"
-    chmod 644 "$CERT_DIR"/*.pem
-    echo "[✔] 自签证书生成完成，CN/SAN 包含 $DOMAIN 和 VPS 公网 IP"
-fi
+  # ----- HTTP -----
+  if [[ "$VM" == "1" ]]; then
+    ss -tuln | grep -q ":80" && echo "80 被占用，不能 HTTP" && continue
+    /root/.acme.sh/acme.sh --issue -d "$DOMAIN" --standalone --keylength ec-256 && break
+    echo "HTTP 验证失败"
 
-# --------- 随机端口函数 ---------
-get_random_port() {
-    while :; do
-        PORT=$((RANDOM%50000+10000))
-        ss -tuln | grep -q $PORT || break
-    done
-    echo $PORT
-}
+  # ----- DNS -----
+  elif [[ "$VM" == "2" ]]; then
+    [[ "$IS_CF" != "1" ]] && echo "非 Cloudflare 域名，暂不支持" && continue
 
-# --------- 输入端口 ---------
-read -rp "请输入 VLESS TCP 端口 (默认 443, 输入0随机): " VLESS_PORT
-[[ -z "$VLESS_PORT" || "$VLESS_PORT" == "0" ]] && VLESS_PORT=$(get_random_port)
-read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_PORT
-[[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
+    if [[ -f /root/.cf_token ]]; then
+      export CF_Token=$(cat /root/.cf_token)
+    else
+      while true; do
+        read -rp "请输入 Cloudflare API Token: " T
+        export CF_Token="$T"
+        curl -s https://api.cloudflare.com/client/v4/user/tokens/verify \
+          -H "Authorization: Bearer $CF_Token" | grep -q '"status":"active"' && break
+        echo "Token 无效"
+      done
+      read -rp "保存 Token? (y/N): " S
+      [[ "$S" =~ ^[Yy]$ ]] && echo "$CF_Token" > /root/.cf_token && chmod 600 /root/.cf_token
+    fi
 
-# --------- 自动生成 UUID 和 HY2 密码 ---------
+    /root/.acme.sh/acme.sh --issue --dns dns_cf -d "$DOMAIN" --keylength ec-256 && break
+    echo "DNS 验证失败"
+
+  else
+    echo "输入错误"
+  fi
+done
+
+# ---------- 安装证书 ----------
+/root/.acme.sh/acme.sh --install-cert -d "$DOMAIN" --ecc \
+  --key-file "$CERT_DIR/privkey.pem" \
+  --fullchain-file "$CERT_DIR/fullchain.pem" \
+  --reloadcmd "systemctl restart sing-box"
+
+# ---------- 端口 ----------
+rand_port(){ while :; do p=$((RANDOM%50000+10000)); ss -tuln | grep -q ":$p" || break; done; echo $p; }
+read -rp "VLESS 端口(0随机): " VLESS
+[[ -z "$VLESS" || "$VLESS" == "0" ]] && VLESS=$(rand_port)
+read -rp "HY2 端口(0随机): " HY2
+[[ -z "$HY2" || "$HY2" == "0" ]] && HY2=$(rand_port)
+
 UUID=$(cat /proc/sys/kernel/random/uuid)
-HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
+PASS=$(openssl rand -base64 16 | tr -dc a-zA-Z0-9)
 
-# --------- 生成 sing-box 配置 ---------
+# ---------- 配置 ----------
 cat > /etc/sing-box/config.json <<EOF
 {
-  "log": { "level": "info" },
-  "inbounds": [
-    {
-      "type": "vless",
-      "listen": "0.0.0.0",
-      "listen_port": $VLESS_PORT,
-      "users": [{ "uuid": "$UUID" }],
-      "tls": {
-        "enabled": true,
-        "server_name": "$DOMAIN",
-        "certificate_path": "$CERT_DIR/fullchain.pem",
-        "key_path": "$CERT_DIR/privkey.pem"
-      }
-    },
-    {
-      "type": "hysteria2",
-      "listen": "0.0.0.0",
-      "listen_port": $HY2_PORT,
-      "users": [{ "password": "$HY2_PASS" }],
-      "tls": {
-        "enabled": true,
-        "server_name": "$DOMAIN",
-        "certificate_path": "$CERT_DIR/fullchain.pem",
-        "key_path": "$CERT_DIR/privkey.pem"
-      }
-    }
-  ],
-  "outbounds": [{ "type": "direct" }]
+ "inbounds":[
+  {"type":"vless","listen":"::","listen_port":$VLESS,"users":[{"uuid":"$UUID"}],
+   "tls":{"enabled":true,"server_name":"$DOMAIN","certificate_path":"$CERT_DIR/fullchain.pem","key_path":"$CERT_DIR/privkey.pem"}},
+  {"type":"hysteria2","listen":"::","listen_port":$HY2,"users":[{"password":"$PASS"}],
+   "tls":{"enabled":true,"server_name":"$DOMAIN","certificate_path":"$CERT_DIR/fullchain.pem","key_path":"$CERT_DIR/privkey.pem"}}
+ ],
+ "outbounds":[{"type":"direct"}]
 }
 EOF
 
-# --------- 防火墙端口开放 ---------
-if command -v ufw &>/dev/null; then
-    ufw allow 80/tcp
-    ufw allow 443/tcp
-    ufw allow "$VLESS_PORT"/tcp
-    ufw allow "$HY2_PORT"/udp
-    ufw reload || true
-fi
-
-# --------- 启动 sing-box ---------
 systemctl enable sing-box
 systemctl restart sing-box
-sleep 3
 
-# --------- 检查端口监听 ---------
-[[ -n "$(ss -tulnp | grep $VLESS_PORT)" ]] && echo "[✔] VLESS TCP $VLESS_PORT 已监听" || echo "[✖] VLESS TCP $VLESS_PORT 未监听"
-[[ -n "$(ss -ulnp | grep $HY2_PORT)" ]] && echo "[✔] Hysteria2 UDP $HY2_PORT 已监听" || echo "[✖] Hysteria2 UDP $HY2_PORT 未监听"
+HOST="$DOMAIN"
+VLESS_URI="vless://$UUID@$HOST:$VLESS?security=tls&sni=$DOMAIN&type=tcp#VLESS-$HOST"
+HY2_URI="hysteria2://$PASS@$HOST:$HY2?sni=$DOMAIN#HY2-$HOST"
 
-# --------- 生成节点 URI 和二维码 ---------
-if [[ "$MODE" == "1" ]]; then
-    NODE_HOST="$DOMAIN"
-    INSECURE="0"
-else
-    NODE_HOST="$SERVER_IPV4"
-    INSECURE="1"
-fi
+echo "==== VLESS ===="
+echo "$VLESS_URI"
+qrencode -t ansiutf8 <<< "$VLESS_URI"
 
-VLESS_URI="vless://$UUID@$NODE_HOST:$VLESS_PORT?encryption=none&security=tls&sni=$DOMAIN&type=tcp#VLESS-$NODE_HOST"
-HY2_URI="hysteria2://$HY2_PASS@$NODE_HOST:$HY2_PORT?insecure=$INSECURE&sni=$DOMAIN#HY2-$NODE_HOST"
+echo "==== HY2 ===="
+echo "$HY2_URI"
+qrencode -t ansiutf8 <<< "$HY2_URI"
 
-echo -e "\n=================== VLESS 节点 ==================="
-echo -e "$VLESS_URI\n"
-command -v qrencode &>/dev/null && echo "$VLESS_URI" | qrencode -t ansiutf8
-
-echo -e "\n=================== Hysteria2 节点 ==================="
-echo -e "$HY2_URI\n"
-command -v qrencode &>/dev/null && echo "$HY2_URI" | qrencode -t ansiutf8
-
-# --------- 生成订阅 JSON ---------
-SUB_FILE="/root/singbox_nodes.json"
-cat > $SUB_FILE <<EOF
-{
-  "vless": "$VLESS_URI",
-  "hysteria2": "$HY2_URI"
-}
-EOF
-
-echo -e "\n=================== 订阅文件内容 ==================="
-cat $SUB_FILE
-echo -e "\n订阅文件已保存到：$SUB_FILE"
-
-echo -e "\n=================== 部署完成 ==================="
+echo '{"vless":"'"$VLESS_URI"'","hysteria2":"'"$HY2_URI"'"}' > /root/singbox_nodes.json
+echo "订阅文件: /root/singbox_nodes.json"
+echo "=================== 部署完成 ==================="
