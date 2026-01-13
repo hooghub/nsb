@@ -157,7 +157,30 @@ read -rp "请输入 Hysteria2 UDP 端口 (默认 8443, 输入0随机): " HY2_POR
 UUID=$(cat /proc/sys/kernel/random/uuid)
 HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
 
-# --------- 生成 sing-box 配置（IPv4 + IPv6 双栈） ---------
+# --------- 生成 sing-box 配置（IPv4 + IPv6 双栈，不冲突端口） ---------
+
+# 如果用户输入端口为 0 或空，则随机生成两个端口
+get_random_port() {
+    while :; do
+        PORT=$((RANDOM%50000+10000))
+        ss -tuln | grep -q $PORT || break
+    done
+    echo $PORT
+}
+
+# IPv4 端口
+[[ -z "$VLESS_PORT" || "$VLESS_PORT" == "0" ]] && VLESS_PORT=$(get_random_port)
+[[ -z "$HY2_PORT" || "$HY2_PORT" == "0" ]] && HY2_PORT=$(get_random_port)
+
+# IPv6 端口（确保和 IPv4 不同）
+VLESS6_PORT=$(get_random_port)
+HY2_6_PORT=$(get_random_port)
+
+# 生成 UUID 和 Hysteria2 密码
+UUID=$(cat /proc/sys/kernel/random/uuid)
+HY2_PASS=$(openssl rand -base64 16 | tr -dc 'a-zA-Z0-9')
+
+# 生成 sing-box 配置 JSON
 cat > /etc/sing-box/config.json <<EOF
 {
   "log": { "level": "info" },
@@ -177,7 +200,7 @@ cat > /etc/sing-box/config.json <<EOF
     {
       "type": "vless",
       "listen": "::",
-      "listen_port": $VLESS_PORT,
+      "listen_port": $VLESS6_PORT,
       "users": [{ "uuid": "$UUID" }],
       "tls": {
         "enabled": true,
@@ -201,7 +224,7 @@ cat > /etc/sing-box/config.json <<EOF
     {
       "type": "hysteria2",
       "listen": "::",
-      "listen_port": $HY2_PORT,
+      "listen_port": $HY2_6_PORT,
       "users": [{ "password": "$HY2_PASS" }],
       "tls": {
         "enabled": true,
@@ -214,6 +237,11 @@ cat > /etc/sing-box/config.json <<EOF
   "outbounds": [{ "type": "direct" }]
 }
 EOF
+
+echo "[✔] sing-box 配置生成完成：IPv4 + IPv6 双栈，端口自动分配，避免冲突"
+echo "VLESS TCP IPv4: $VLESS_PORT, IPv6: $VLESS6_PORT"
+echo "Hysteria2 UDP IPv4: $HY2_PORT, IPv6: $HY2_6_PORT"
+
 
 
 # --------- 防火墙端口开放（仅检测到 UFW 时） ---------
