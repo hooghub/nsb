@@ -262,7 +262,7 @@ fi
 # --------- 启动 sing-box ---------
 systemctl enable sing-box
 systemctl restart sing-box
-sleep 3
+sleep 10
 
 # --------- 检查端口监听并显示信息 ---------
 ss -tulnp | grep -q ":$VLESS_PORT" && echo "[✔] VLESS TCP IPv4（$VLESS_PORT） 已监听" || echo "[✖] VLESS TCP IPv4（$VLESS_PORT） 未监听"
