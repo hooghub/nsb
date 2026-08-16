@@ -79,6 +79,10 @@ if ! command -v sing-box &>/dev/null; then
   bash <(curl -fsSL https://sing-box.app/deb-install.sh)
 fi
 
+if [[ -x /usr/bin/sing-box && ! -e /usr/local/bin/sing-box ]]; then
+  ln -sf /usr/bin/sing-box /usr/local/bin/sing-box
+fi
+
 CERT_DIR="/etc/ssl/sing-box"
 mkdir -p "$CERT_DIR"
 
